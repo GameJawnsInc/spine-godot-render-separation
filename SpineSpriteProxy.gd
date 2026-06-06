@@ -21,8 +21,9 @@ extends SpineSprite
 ##   and slot state from source to proxy.
 ## [br]3. [i]Source-mask[/i] (source.world_transforms_changed) — compute this
 ##   frame's claim from the source's current draw order, zero α on the claimed
-##   slots. Skipped when the proxy is hidden — toggling [code]visible[/code]
-##   cleanly reveals the source's full skeleton.
+##   slots. Runs unconditionally — hiding the proxy hides those slots
+##   entirely (proxy doesn't draw, source doesn't either). To restore source
+##   rendering for the range, detach the proxy or clear [member source_sprite].
 ## [br]4. [i]Self-mask[/i] (own before_world_transforms_change) — zero α on
 ##   our own slots that are NOT in this frame's claim.
 ##
@@ -164,8 +165,9 @@ func _resolve_and_connect() -> void:
 	#      apply runs and BEFORE source's world transforms.
 	#   3. Source-mask — compute this frame's claim from the source's current
 	#      draw order, then zero α on the claimed slots AFTER world transforms
-	#      and BEFORE source's update_meshes. Skipped when the proxy is hidden,
-	#      so toggling visibility cleanly reveals the source's full skeleton.
+	#      and BEFORE source's update_meshes. Runs unconditionally — hiding
+	#      the proxy hides those slots entirely (proxy doesn't draw, source
+	#      doesn't either).
 	_source.before_animation_state_apply.connect(_restore_source)
 	_source.before_world_transforms_change.connect(_mirror)
 	_source.world_transforms_changed.connect(_mask_source)
@@ -261,15 +263,15 @@ func _restore_source(_s) -> void:
 func _mask_source(_s) -> void:
 	# Compute this frame's claim from the source's current draw order, then
 	# zero α on the claimed slots. With N proxies the source's hidden slots
-	# are the union of every proxy's claim. Skipped when the proxy is hidden
-	# so the source can render its full skeleton (useful for debug toggling).
+	# are the union of every proxy's claim. Runs even when the proxy is
+	# hidden — that's intentional: hiding the proxy hides those slots
+	# entirely (proxy doesn't draw, source doesn't either). If you want the
+	# source to redraw them, detach the proxy (queue_free or clear
+	# source_sprite), don't just hide it.
 	if not is_instance_valid(_source):
 		return
 	var skel := _source.get_skeleton()
 	if skel == null:
-		return
-	if not is_visible_in_tree():
-		_claimed_indices = {}
 		return
 	_claimed_indices = _compute_claim(skel)
 	var slots := skel.get_slots()
