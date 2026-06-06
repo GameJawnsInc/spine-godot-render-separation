@@ -74,13 +74,21 @@ func _resolve_and_connect() -> void:
 	_slot_lo = 0
 	_slot_hi = slots.size()
 	if start_slot_name != "":
+		var found := false
 		for s in slots:
 			if s.get_data().get_name() == start_slot_name:
-				_slot_lo = s.get_data().get_index(); break
+				_slot_lo = s.get_data().get_index(); found = true; break
+		if not found:
+			push_warning("SpineSpriteProxy: start_slot_name '%s' not found in source skeleton; using slot 0." % start_slot_name)
 	if end_slot_name != "":
+		var found := false
 		for s in slots:
 			if s.get_data().get_name() == end_slot_name:
-				_slot_hi = s.get_data().get_index() + 1; break  # inclusive end
+				_slot_hi = s.get_data().get_index() + 1; found = true; break
+		if not found:
+			push_warning("SpineSpriteProxy: end_slot_name '%s' not found in source skeleton; using last slot." % end_slot_name)
+	if _slot_lo >= _slot_hi:
+		push_warning("SpineSpriteProxy: slot range [%d, %d) is empty; proxy will draw nothing." % [_slot_lo, _slot_hi])
 
 	# Tick after source so updateWorldTransform reads mirrored bones.
 	process_priority = _source.process_priority + 1
@@ -133,10 +141,13 @@ func _mirror(_s) -> void:
 	if src_skel == null or dst_skel == null:
 		return
 
-	# Bones: copy local pose. Proxy's updateWorldTransform reproduces world matrices.
+	# Bones: copy local pose. Loops are bound to min() so a transient skeleton
+	# mismatch (e.g. source's skeleton_data_res just changed but ours hasn't
+	# re-initialized yet) can't index out of range.
 	var src_bones := src_skel.get_bones()
 	var dst_bones := dst_skel.get_bones()
-	for i in src_bones.size():
+	var bone_n: int = min(src_bones.size(), dst_bones.size())
+	for i in bone_n:
 		var a = src_bones[i].get_pose()
 		var b = dst_bones[i].get_pose()
 		b.set_x(a.get_x()); b.set_y(a.get_y())
@@ -148,7 +159,8 @@ func _mirror(_s) -> void:
 	# Slots: color, dark color, attachment, sequence index, deform (FFD).
 	var src_slots := src_skel.get_slots()
 	var dst_slots := dst_skel.get_slots()
-	for i in src_slots.size():
+	var slot_n: int = min(src_slots.size(), dst_slots.size())
+	for i in slot_n:
 		var a = src_slots[i].get_pose()
 		var b = dst_slots[i].get_pose()
 		b.set_color(a.get_color())
