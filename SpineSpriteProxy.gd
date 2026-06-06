@@ -9,7 +9,29 @@ extends SpineSprite
 ##
 ## The proxy mirrors the source's bone and slot state each frame; it doesn't run
 ## its own animation. To split a skeleton N ways, place N-1 proxies on the same
-## source with adjacent ranges.
+## source with adjacent ranges — each proxy independently restores/masks only
+## its own range on the source, so they compose without coordination.
+##
+## [b]Per-tick lifecycle, four hooks:[/b]
+## [br]1. [i]Restore[/i] (source.before_animation_state_apply) — reset claimed
+##   slot colors to setup-pose color so last frame's α=0 mask doesn't poison
+##   this frame's mirror.
+## [br]2. [i]Mirror[/i] (source.before_world_transforms_change) — copy bones
+##   and slot state from source to proxy.
+## [br]3. [i]Source-mask[/i] (source.world_transforms_changed) — zero α on the
+##   source's claimed slots, after world transforms but before update_meshes.
+## [br]4. [i]Self-mask[/i] (own before_world_transforms_change) — zero α on
+##   our own out-of-range slots.
+##
+## [b]Footgun:[/b] do not call [code]set_animation()[/code] on a proxy.
+## Because the proxy extends SpineSprite, the API is inherited — but the proxy
+## is a passive mirror, and running its own animation state would overwrite
+## the bones the mirror just copied. Drive animation only on the source.
+##
+## [b]Known limitation:[/b] the slot-name dropdowns are populated from the
+## source's current skeleton. If you change the source's [code]skeleton_data_res[/code]
+## without re-poking this proxy's [member source_sprite], the dropdowns stay
+## stale until you re-pick the NodePath.
 
 @export var source_sprite: NodePath:
 	set(v):
@@ -93,6 +115,9 @@ func _resolve_and_connect() -> void:
 	if src == null:
 		push_warning("SpineSpriteProxy: source_sprite must point to a SpineSprite")
 		return
+	if src == self:
+		push_warning("SpineSpriteProxy: source_sprite points to this proxy itself; ignoring.")
+		return
 	_source = src
 
 	# Match source's skeleton data so our own skeleton has matching slot/bone layout.
@@ -155,15 +180,21 @@ func _disconnect() -> void:
 		if _source.world_transforms_changed.is_connected(_mask_source_range):
 			_source.world_transforms_changed.disconnect(_mask_source_range)
 		# Restore source's slot colors for our claimed range, so the source draws
-		# its full skeleton again after we detach.
+		# its full skeleton again after we detach. Color-only (not full
+		# set_to_setup_pose) so we don't blow away attachment/deform/sequence
+		# state that the source's next animation tick would have to reapply.
 		var skel := _source.get_skeleton()
 		if skel != null:
 			var slots := skel.get_slots()
 			for i in range(_slot_lo, min(_slot_hi, slots.size())):
-				slots[i].set_to_setup_pose()
+				var pose = slots[i].get_pose()
+				var data = slots[i].get_data()
+				pose.set_color(data.get_color())
 	if before_world_transforms_change.is_connected(_mask_self):
 		before_world_transforms_change.disconnect(_mask_self)
 	_source = null
+	_slot_lo = 0
+	_slot_hi = 0
 
 # --- mirror & mask hooks ---
 
@@ -214,7 +245,10 @@ func _restore_source_range(_s) -> void:
 	# If the animation has a color timeline for the slot, apply will override.
 	if not is_instance_valid(_source):
 		return
-	var slots := _source.get_skeleton().get_slots()
+	var skel := _source.get_skeleton()
+	if skel == null:
+		return
+	var slots := skel.get_slots()
 	for i in range(_slot_lo, min(_slot_hi, slots.size())):
 		var pose = slots[i].get_pose()
 		var data = slots[i].get_data()
@@ -225,7 +259,10 @@ func _mask_source_range(_s) -> void:
 	# the source's hidden slots are the union of every proxy's claimed range.
 	if not is_instance_valid(_source):
 		return
-	var slots := _source.get_skeleton().get_slots()
+	var skel := _source.get_skeleton()
+	if skel == null:
+		return
+	var slots := skel.get_slots()
 	for i in range(_slot_lo, min(_slot_hi, slots.size())):
 		var pose = slots[i].get_pose()
 		var c = pose.get_color()
@@ -234,7 +271,10 @@ func _mask_source_range(_s) -> void:
 
 func _mask_self(_s) -> void:
 	# Zero our own slot colors for everything OUTSIDE [_slot_lo, _slot_hi).
-	var slots := get_skeleton().get_slots()
+	var skel := get_skeleton()
+	if skel == null:
+		return
+	var slots := skel.get_slots()
 	for i in slots.size():
 		if i < _slot_lo or i >= _slot_hi:
 			var pose = slots[i].get_pose()
