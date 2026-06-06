@@ -7,11 +7,17 @@ A pure-GDScript render-separation proxy for [spine-godot](https://esotericsoftwa
 ## Requirements
 
 - **Godot 4.5+** (developed against 4.6.2-stable).
-- **Spine for Godot 4.3+** installed as a GDExtension. The `bin/` folder is intentionally gitignored — see Setup.
+- **Spine for Godot 4.3+** GDExtension installed in your project.
 
-## Setup
+## Install
 
-This repo doesn't bundle the Spine for Godot extension binaries or the demo art assets — both are Esoteric Software's to distribute. To run the example, two things have to land in the project root:
+Copy **`SpineSpriteProxy.gd`** anywhere in your project's `res://`. That's it.
+
+The script declares `class_name SpineSpriteProxy`, so once it's anywhere in the project Godot registers it globally — you can add `SpineSpriteProxy` nodes from the editor's "Add Child Node" dialog and reference the class from any other script without imports or autoloads. No plugin to enable, no folder structure to match.
+
+## Running this repo's demo (optional)
+
+If you cloned this repo and want to see `example.tscn` run, you need two things that aren't redistributed here (both are Esoteric Software's):
 
 1. **Spine for Godot extension** at `bin/`:
    ```
@@ -22,18 +28,11 @@ This repo doesn't bundle the Spine for Godot extension binaries or the demo art 
      windows/libspine_godot.windows.template_release.x86_64.dll
      (and mac/linux/etc. as needed)
    ```
-   Get this from your existing Spine-enabled Godot project or from Esoteric Software's distribution.
+   Copy from your existing Spine-enabled Godot project, or from Esoteric Software's distribution.
 
-2. **Demo assets** at `assets/`, copied from [EsotericSoftware/spine-runtimes](https://github.com/EsotericSoftware/spine-runtimes/tree/4.3/spine-godot/example-v4/assets):
-   ```
-   assets/
-     spineboy/      ← copy from spine-runtimes/spine-godot/example-v4/assets/spineboy
-     raptor/        ← copy from spine-runtimes/spine-godot/example-v4/assets/raptor
-   ```
+2. **Skeleton assets** wherever the example/smoke-test scenes reference them — currently `assets/`. The example uses whatever skeletons you've configured the `.tscn` with; the smoke test references `assets/spineboy/spineboy-data-res.tres`. You can grab a default spineboy from [spine-runtimes/spine-godot/example-v4/assets/spineboy](https://github.com/EsotericSoftware/spine-runtimes/tree/4.3/spine-godot/example-v4/assets/spineboy).
 
-Then open `project.godot` in Godot. `example.tscn` is the main scene.
-
-The smoke test only needs the spineboy assets.
+Then open `project.godot` in Godot.
 
 ## How it works
 
@@ -64,13 +63,13 @@ The script is `@tool`, so the proxy works in editor preview too — scene-view l
 
 ## Example
 
-`example.tscn`: a raptor walks between the back and front halves of a spineboy that's parented under the raptor's head bone (via `SpineBoneNode`). Layering is `z_index`-driven:
+`example.tscn` is a render-separation demo of the case that motivated the project: a smaller skeleton is parented under a `SpineBoneNode` of a larger one (so it rides the host), and the *host's* body draws *between* the smaller skeleton's two halves. Layering is `z_index`-driven:
 
-- Spineboy (source): `z_index = -1` → its back-half slots draw behind the raptor.
-- Raptor: `z_index = 0`.
-- FrontProxy (`SpineSpriteProxy`): `z_index = 1`, `source_sprite = ../Raptor/SpineBoneNode/Spineboy`, `start_slot_name = "front-upper-arm"` → renders the spineboy's front half above the raptor.
+- Smaller skeleton (source): `z_index = -1` → its visible slots draw behind the host.
+- Host skeleton: `z_index = 0`.
+- `SpineSpriteProxy` (configured with the source NodePath and a `start_slot_name`): the rest of the source's slots, drawn above the host.
 
-This is the case that motivated the project: spineboy rides raptor (parented under it), and the raptor's body draws *between* spineboy's halves — which `SpineSlotNode` alone can't express because the scene tree can't simultaneously have "spineboy rides raptor" and "raptor lives inside spineboy."
+This case is what `SpineSlotNode` alone can't express, because the scene tree can't simultaneously hold "source rides host" and "host lives inside source."
 
 ## Smoke test
 
@@ -93,7 +92,7 @@ Exit code 0 = all pass.
 
 Code (`SpineSpriteProxy.gd`, the example, the smoke test) is MIT-licensed — see `LICENSE`.
 
-The Spine for Godot extension and demo assets aren't redistributed here; both are Esoteric Software's and subject to the [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license). You'll need them locally to run the example (see Setup).
+The Spine for Godot extension and demo assets aren't redistributed here; both are Esoteric Software's and subject to the [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license). You'll need them locally to run the example (see "Running this repo's demo").
 
 ## Credits
 
