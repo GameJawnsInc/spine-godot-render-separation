@@ -15,13 +15,16 @@ extends SpineSprite
 	set(v):
 		source_sprite = v
 		_rewire()
+		notify_property_list_changed()  # repopulate slot dropdowns
 
-@export var start_slot_name: String = "":
+# Not @export — exposed via _get_property_list() below so the inspector shows
+# them as dropdowns of the source skeleton's slot names instead of free-text.
+var start_slot_name: String = "":
 	set(v):
 		start_slot_name = v
 		_rewire()
 
-@export var end_slot_name: String = "":
+var end_slot_name: String = "":
 	set(v):
 		end_slot_name = v
 		_rewire()
@@ -36,6 +39,37 @@ var _slot_lo: int = 0     # inclusive
 var _slot_hi: int = 0     # exclusive
 
 # --- lifecycle ---
+
+func _get_property_list() -> Array:
+	# Build start_slot_name / end_slot_name as dropdowns sourced from the
+	# resolved source's slot names. HINT_ENUM_SUGGESTION = dropdown + free
+	# text, so the "" empty-endpoint sentinel still works (type empty into
+	# the field) and the user isn't locked out if the source hasn't resolved.
+	var slot_names := PackedStringArray()
+	if is_inside_tree() and not source_sprite.is_empty():
+		var src := get_node_or_null(source_sprite) as SpineSprite
+		if src != null:
+			var skel := src.get_skeleton()
+			if skel != null:
+				for slot in skel.get_slots():
+					slot_names.append(slot.get_data().get_name())
+	var hint_string := ",".join(slot_names)
+	return [
+		{
+			"name": "start_slot_name",
+			"type": TYPE_STRING,
+			"hint": PROPERTY_HINT_ENUM_SUGGESTION,
+			"hint_string": hint_string,
+			"usage": PROPERTY_USAGE_DEFAULT,
+		},
+		{
+			"name": "end_slot_name",
+			"type": TYPE_STRING,
+			"hint": PROPERTY_HINT_ENUM_SUGGESTION,
+			"hint_string": hint_string,
+			"usage": PROPERTY_USAGE_DEFAULT,
+		},
+	]
 
 func _ready() -> void:
 	_rewire()
