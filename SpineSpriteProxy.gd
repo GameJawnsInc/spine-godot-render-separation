@@ -13,15 +13,24 @@ extends SpineSprite
 ## its own range on the source, so they compose without coordination.
 ##
 ## [b]Per-tick lifecycle, four hooks:[/b]
-## [br]1. [i]Restore[/i] (source.before_animation_state_apply) — reset claimed
-##   slot colors to setup-pose color so last frame's α=0 mask doesn't poison
-##   this frame's mirror.
+## [br]1. [i]Restore[/i] (source.before_animation_state_apply) — reset every
+##   source slot's color to its setup-pose color so last frame's α=0 mask
+##   doesn't poison this frame's mirror. Restored unconditionally because
+##   the claim can vary frame-to-frame with draw-order animations.
 ## [br]2. [i]Mirror[/i] (source.before_world_transforms_change) — copy bones
 ##   and slot state from source to proxy.
-## [br]3. [i]Source-mask[/i] (source.world_transforms_changed) — zero α on the
-##   source's claimed slots, after world transforms but before update_meshes.
+## [br]3. [i]Source-mask[/i] (source.world_transforms_changed) — compute this
+##   frame's claim from the source's current draw order, zero α on the claimed
+##   slots. Skipped when the proxy is hidden — toggling [code]visible[/code]
+##   cleanly reveals the source's full skeleton.
 ## [br]4. [i]Self-mask[/i] (own before_world_transforms_change) — zero α on
-##   our own out-of-range slots.
+##   our own slots that are NOT in this frame's claim.
+##
+## [b]Claim semantics:[/b] [member start_slot_name] and [member end_slot_name]
+## are resolved against the source's [i]current draw order[/i] each frame, not
+## the static slot-index range. A slot that draws between start and end in
+## the running animation is in the claim regardless of its setup-pose index,
+## so DrawOrderTimelines in the animation are respected.
 ##
 ## [b]Footgun:[/b] do not call [code]set_animation()[/code] on a proxy.
 ## Because the proxy extends SpineSprite, the API is inherited — but the proxy
@@ -57,8 +66,10 @@ var end_slot_name: String = "":
 
 # --- internal state ---
 var _source: SpineSprite
-var _slot_lo: int = 0     # inclusive
-var _slot_hi: int = 0     # exclusive
+# Slot indices claimed this frame, recomputed from the source's current
+# draw order in _mask_source and consumed in _mask_self. Empty when the
+# proxy is hidden (so the source draws everything).
+var _claimed_indices: Dictionary = {}
 
 # --- lifecycle ---
 
@@ -127,45 +138,37 @@ func _resolve_and_connect() -> void:
 	var skel := _source.get_skeleton()
 	if skel == null:
 		return
-	var slots := skel.get_slots()
 
-	# Resolve slot range. Empty strings = open endpoint (slot 0 / last slot).
-	_slot_lo = 0
-	_slot_hi = slots.size()
-	if start_slot_name != "":
-		var found := false
-		for s in slots:
-			if s.get_data().get_name() == start_slot_name:
-				_slot_lo = s.get_data().get_index(); found = true; break
-		if not found:
-			push_warning("SpineSpriteProxy: start_slot_name '%s' not found in source skeleton; using slot 0." % start_slot_name)
-	if end_slot_name != "":
-		var found := false
-		for s in slots:
-			if s.get_data().get_name() == end_slot_name:
-				_slot_hi = s.get_data().get_index() + 1; found = true; break
-		if not found:
-			push_warning("SpineSpriteProxy: end_slot_name '%s' not found in source skeleton; using last slot." % end_slot_name)
-	if _slot_lo >= _slot_hi:
-		push_warning("SpineSpriteProxy: slot range [%d, %d) is empty; proxy will draw nothing." % [_slot_lo, _slot_hi])
+	# Validate slot names exist. They're resolved each frame against the
+	# source's current draw order; if missing, _compute_claim falls back to
+	# an open endpoint (first / last slot in draw order).
+	var slot_names_set := {}
+	for s in skel.get_slots():
+		slot_names_set[s.get_data().get_name()] = true
+	if start_slot_name != "" and not slot_names_set.has(start_slot_name):
+		push_warning("SpineSpriteProxy: start_slot_name '%s' not found in source skeleton; using first slot in draw order." % start_slot_name)
+	if end_slot_name != "" and not slot_names_set.has(end_slot_name):
+		push_warning("SpineSpriteProxy: end_slot_name '%s' not found in source skeleton; using last slot in draw order." % end_slot_name)
 
 	# Tick after source so updateWorldTransform reads mirrored bones.
 	process_priority = _source.process_priority + 1
 
 	# Hooks. Three things have to happen per source tick, in order:
-	#   1. Restore — set source's claimed slot colors back to setup-pose color
-	#      BEFORE animation applies. Spine's AnimationState.apply doesn't
-	#      reset slot colors when there's no color timeline, so without this
-	#      our α=0 mask from last frame would persist and the mirror would
-	#      read stale zeros.
+	#   1. Restore — set source slot colors back to setup-pose color BEFORE
+	#      animation applies. Spine's AnimationState.apply doesn't reset slot
+	#      colors when there's no color timeline, so without this our α=0
+	#      mask from last frame would persist and the mirror would read stale
+	#      zeros. We restore EVERY slot (not just the claim) because the claim
+	#      can change frame-to-frame with draw-order animations.
 	#   2. Mirror — copy source's now-fresh bone+slot state to proxy AFTER
 	#      apply runs and BEFORE source's world transforms.
-	#   3. Source-mask — zero source's claimed slots AFTER world transforms
-	#      and BEFORE source's update_meshes (so source renders without them
-	#      but world transforms were computed from the unmasked pose).
-	_source.before_animation_state_apply.connect(_restore_source_range)
+	#   3. Source-mask — compute this frame's claim from the source's current
+	#      draw order, then zero α on the claimed slots AFTER world transforms
+	#      and BEFORE source's update_meshes. Skipped when the proxy is hidden,
+	#      so toggling visibility cleanly reveals the source's full skeleton.
+	_source.before_animation_state_apply.connect(_restore_source)
 	_source.before_world_transforms_change.connect(_mirror)
-	_source.world_transforms_changed.connect(_mask_source_range)
+	_source.world_transforms_changed.connect(_mask_source)
 	before_world_transforms_change.connect(_mask_self)
 
 	# Initial mirror so the first frame doesn't flash setup pose.
@@ -173,28 +176,28 @@ func _resolve_and_connect() -> void:
 
 func _disconnect() -> void:
 	if _source and is_instance_valid(_source):
-		if _source.before_animation_state_apply.is_connected(_restore_source_range):
-			_source.before_animation_state_apply.disconnect(_restore_source_range)
+		if _source.before_animation_state_apply.is_connected(_restore_source):
+			_source.before_animation_state_apply.disconnect(_restore_source)
 		if _source.before_world_transforms_change.is_connected(_mirror):
 			_source.before_world_transforms_change.disconnect(_mirror)
-		if _source.world_transforms_changed.is_connected(_mask_source_range):
-			_source.world_transforms_changed.disconnect(_mask_source_range)
-		# Restore source's slot colors for our claimed range, so the source draws
-		# its full skeleton again after we detach. Color-only (not full
-		# set_to_setup_pose) so we don't blow away attachment/deform/sequence
-		# state that the source's next animation tick would have to reapply.
+		if _source.world_transforms_changed.is_connected(_mask_source):
+			_source.world_transforms_changed.disconnect(_mask_source)
+		# Restore source's slot colors to setup so the source draws its full
+		# skeleton again after we detach. We restore ALL slots because the
+		# claim can vary frame-to-frame with draw-order animations, so we
+		# don't reliably know what we last masked. Color-only (not full
+		# set_to_setup_pose) so attachment/deform/sequence state survives;
+		# the source's next animation tick will overwrite color as needed.
 		var skel := _source.get_skeleton()
 		if skel != null:
-			var slots := skel.get_slots()
-			for i in range(_slot_lo, min(_slot_hi, slots.size())):
-				var pose = slots[i].get_pose()
-				var data = slots[i].get_data()
+			for slot in skel.get_slots():
+				var pose = slot.get_pose()
+				var data = slot.get_data()
 				pose.set_color(data.get_color())
 	if before_world_transforms_change.is_connected(_mask_self):
 		before_world_transforms_change.disconnect(_mask_self)
 	_source = null
-	_slot_lo = 0
-	_slot_hi = 0
+	_claimed_indices = {}
 
 # --- mirror & mask hooks ---
 
@@ -239,45 +242,74 @@ func _mirror(_s) -> void:
 	if follow_source_transform:
 		global_transform = _source.global_transform
 
-func _restore_source_range(_s) -> void:
-	# Set source's claimed slots back to setup-pose color before apply runs,
-	# so the previous frame's α=0 mask doesn't poison this frame's mirror.
-	# If the animation has a color timeline for the slot, apply will override.
+func _restore_source(_s) -> void:
+	# Reset EVERY source slot's color to setup before apply runs, so the
+	# previous frame's α=0 mask doesn't poison this frame's mirror. We restore
+	# all slots (not just the current claim) because the claim can change
+	# frame-to-frame with draw-order animations — we don't know which slots
+	# we masked last frame. Apply will overwrite as needed.
 	if not is_instance_valid(_source):
 		return
 	var skel := _source.get_skeleton()
 	if skel == null:
 		return
-	var slots := skel.get_slots()
-	for i in range(_slot_lo, min(_slot_hi, slots.size())):
-		var pose = slots[i].get_pose()
-		var data = slots[i].get_data()
+	for slot in skel.get_slots():
+		var pose = slot.get_pose()
+		var data = slot.get_data()
 		pose.set_color(data.get_color())
 
-func _mask_source_range(_s) -> void:
-	# Zero source's slot colors for the range THIS proxy claims. With N proxies,
-	# the source's hidden slots are the union of every proxy's claimed range.
+func _mask_source(_s) -> void:
+	# Compute this frame's claim from the source's current draw order, then
+	# zero α on the claimed slots. With N proxies the source's hidden slots
+	# are the union of every proxy's claim. Skipped when the proxy is hidden
+	# so the source can render its full skeleton (useful for debug toggling).
 	if not is_instance_valid(_source):
 		return
 	var skel := _source.get_skeleton()
 	if skel == null:
 		return
+	if not is_visible_in_tree():
+		_claimed_indices = {}
+		return
+	_claimed_indices = _compute_claim(skel)
 	var slots := skel.get_slots()
-	for i in range(_slot_lo, min(_slot_hi, slots.size())):
-		var pose = slots[i].get_pose()
+	for idx in _claimed_indices:
+		var pose = slots[idx].get_pose()
 		var c = pose.get_color()
 		c.a = 0.0
 		pose.set_color(c)
 
 func _mask_self(_s) -> void:
-	# Zero our own slot colors for everything OUTSIDE [_slot_lo, _slot_hi).
+	# Zero our own slot colors for everything NOT in this frame's claim
+	# (set by _mask_source on the source's tick, which fires before ours).
 	var skel := get_skeleton()
 	if skel == null:
 		return
 	var slots := skel.get_slots()
 	for i in slots.size():
-		if i < _slot_lo or i >= _slot_hi:
+		if not _claimed_indices.has(i):
 			var pose = slots[i].get_pose()
 			var c = pose.get_color()
 			c.a = 0.0
 			pose.set_color(c)
+
+# Walk the source's current draw order to find positions of start_slot_name /
+# end_slot_name, then collect the slot indices appearing at those draw
+# positions. Returns a Dictionary used as a set (slot_index → true).
+func _compute_claim(skel: SpineSkeleton) -> Dictionary:
+	var draw_order := skel.get_draw_order()
+	var lo := 0
+	var hi := draw_order.size()
+	if start_slot_name != "":
+		for i in draw_order.size():
+			if draw_order[i].get_data().get_name() == start_slot_name:
+				lo = i; break
+	if end_slot_name != "":
+		for i in draw_order.size():
+			if draw_order[i].get_data().get_name() == end_slot_name:
+				hi = i + 1; break  # inclusive end
+	var claim: Dictionary = {}
+	if lo < hi:
+		for i in range(lo, hi):
+			claim[draw_order[i].get_data().get_index()] = true
+	return claim

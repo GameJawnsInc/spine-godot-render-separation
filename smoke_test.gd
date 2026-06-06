@@ -1,13 +1,19 @@
 extends Node2D
 
-# Automated smoke test for SpineSpriteProxy. Builds a 2-way split, ticks for
+# Automated smoke test for SpineSpriteProxy. Authors a 2-way split, ticks for
 # a few frames, then asserts:
 #   1. BONE_MIRROR        — every proxy bone's local pose matches source's.
 #   2. ATTACHMENT_MIRROR  — every proxy slot's attachment matches source's
 #                            (verifies attachment refs are valid across skeletons).
-#   3. SOURCE_MASK        — source hides [split, end), shows [0, split).
-#   4. PROXY_MASK         — proxy hides [0, split), shows [split, end) at α>0
-#                            (catches the "mirror reads masked state" bug).
+#   3. SOURCE_MASK        — slots in the proxy's draw-order claim are hidden
+#                            on the source; slots outside the claim are not.
+#   4. PROXY_MASK         — slots in the claim are visible on the proxy;
+#                            slots outside the claim are hidden.
+#
+# The "claim" is computed the same way the proxy computes it: from the source's
+# CURRENT draw order, the slot at SPLIT_SLOT's draw position through the end of
+# draw order. With a draw-order-animating skeleton this set differs from a
+# raw slot-index range.
 #
 # Run headless: godot --headless smoke_test.tscn
 # Exit code 0 = all pass; 1 = any fail.
@@ -39,16 +45,23 @@ func run_assertions() -> void:
 
 	var src_skel := source.get_skeleton()
 	var src_slots := src_skel.get_slots()
-	var split_index := -1
-	for slot in src_slots:
-		if slot.get_data().get_name() == SPLIT_SLOT:
-			split_index = slot.get_data().get_index()
+	var src_draw_order := src_skel.get_draw_order()
+
+	# Compute the proxy's expected claim using the same draw-order logic the
+	# proxy uses: slots at draw-order positions [pos_of(SPLIT_SLOT), end).
+	var split_draw_pos := -1
+	for i in src_draw_order.size():
+		if src_draw_order[i].get_data().get_name() == SPLIT_SLOT:
+			split_draw_pos = i
 			break
-	if split_index < 0:
-		print("FAIL: split slot '%s' not found" % SPLIT_SLOT)
+	if split_draw_pos < 0:
+		print("FAIL: split slot '%s' not found in draw order" % SPLIT_SLOT)
 		_report(0, 1); return
-	print("Split: slot '%s' (index %d). Source keeps [0, %d), proxy keeps [%d, %d)." \
-		% [SPLIT_SLOT, split_index, split_index, split_index, src_slots.size()])
+	var claimed: Dictionary = {}
+	for i in range(split_draw_pos, src_draw_order.size()):
+		claimed[src_draw_order[i].get_data().get_index()] = true
+	print("Split slot '%s' at draw position %d of %d. Claim covers %d slot indices." \
+		% [SPLIT_SLOT, split_draw_pos, src_draw_order.size(), claimed.size()])
 
 	var prx_skel := proxy.get_skeleton()
 	var prx_slots := prx_skel.get_slots()
@@ -104,53 +117,55 @@ func run_assertions() -> void:
 		for p in attach_problems: print(p)
 		fails += 1
 
-	# 3) Source mask: slots [split, end) should be α=0; [0, split) should be α≈1.
+	# 3) Source mask: claimed slot indices should be α=0; unclaimed slots
+	# should retain whatever α the animation set them to (we only flag the
+	# unclaimed case when the setup α is non-zero — slots with setup α=0
+	# stay invisible regardless).
 	var src_problems: Array = []
 	for i in src_slots.size():
 		var alpha: float = src_slots[i].get_pose().get_color().a
-		var should_be_zero: bool = (i >= split_index)
-		if should_be_zero and alpha > 0.001:
-			src_problems.append("  slot %d (%s) expected α=0, got α=%.3f" \
-				% [i, src_slots[i].get_data().get_name(), alpha])
-		elif not should_be_zero and alpha < 0.999:
-			src_problems.append("  slot %d (%s) expected α=1, got α=%.3f" \
-				% [i, src_slots[i].get_data().get_name(), alpha])
+		var setup_alpha: float = src_slots[i].get_data().get_color().a
+		var name: String = src_slots[i].get_data().get_name()
+		if claimed.has(i):
+			if alpha > 0.001:
+				src_problems.append("  slot %d (%s) claimed → expected α=0, got α=%.3f" \
+					% [i, name, alpha])
+		else:
+			if setup_alpha > 0.001 and alpha < 0.001:
+				src_problems.append("  slot %d (%s) unclaimed → expected α>0 (setup α=%.3f), got α=%.3f" \
+					% [i, name, setup_alpha, alpha])
 	if src_problems.is_empty():
-		print("[PASS] SOURCE_MASK        — hides [%d, %d), shows [0, %d)" \
-			% [split_index, src_slots.size(), split_index])
+		print("[PASS] SOURCE_MASK        — %d claimed slots hidden, %d unclaimed untouched" \
+			% [claimed.size(), src_slots.size() - claimed.size()])
 		passes += 1
 	else:
 		print("[FAIL] SOURCE_MASK")
 		for p in src_problems: print(p)
 		fails += 1
 
-	# 4) Proxy mask: [0, split) should be α=0; [split, end) should mirror source's
-	# restored-then-applied α. We compare proxy's α against the slot's setup-pose
-	# α — they should match for any slot the walk anim doesn't have a color
-	# timeline for. Some slots (e.g. "muzzle-glow") have setup α=0 by design.
-	var prx_zero_problems: Array = []
-	var prx_nonzero_problems: Array = []
+	# 4) Proxy mask: claimed slot indices should be visible (mirror copied
+	# the source's pre-mask α, which equals setup α for slots without color
+	# timelines); unclaimed slot indices should be α=0.
+	var prx_problems: Array = []
 	for i in prx_slots.size():
 		var alpha: float = prx_slots[i].get_pose().get_color().a
 		var setup_alpha: float = prx_slots[i].get_data().get_color().a
 		var name: String = prx_slots[i].get_data().get_name()
-		if i < split_index:
-			if alpha > 0.001:
-				prx_zero_problems.append("  slot %d (%s) expected α=0, got α=%.3f" % [i, name, alpha])
-		else:
-			# Only flag if the setup pose has α>0 (so we expect a non-zero mirror)
-			# but the proxy ended up zeroed.
+		if claimed.has(i):
 			if setup_alpha > 0.001 and alpha < 0.001:
-				prx_nonzero_problems.append("  slot %d (%s) expected α>0 (setup α=%.3f), got α=%.3f" \
+				prx_problems.append("  slot %d (%s) claimed → expected α>0 (setup α=%.3f), got α=%.3f" \
 					% [i, name, setup_alpha, alpha])
-	if prx_zero_problems.is_empty() and prx_nonzero_problems.is_empty():
-		print("[PASS] PROXY_MASK         — hides [0, %d), shows [%d, %d)" \
-			% [split_index, split_index, prx_slots.size()])
+		else:
+			if alpha > 0.001:
+				prx_problems.append("  slot %d (%s) unclaimed → expected α=0, got α=%.3f" \
+					% [i, name, alpha])
+	if prx_problems.is_empty():
+		print("[PASS] PROXY_MASK         — %d claimed slots shown, %d unclaimed hidden" \
+			% [claimed.size(), prx_slots.size() - claimed.size()])
 		passes += 1
 	else:
 		print("[FAIL] PROXY_MASK")
-		for p in prx_zero_problems: print(p)
-		for p in prx_nonzero_problems: print(p)
+		for p in prx_problems: print(p)
 		fails += 1
 
 	_report(passes, fails)
