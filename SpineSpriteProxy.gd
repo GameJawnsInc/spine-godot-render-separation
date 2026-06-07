@@ -12,13 +12,13 @@ extends SpineSprite
 ## source with adjacent ranges — each proxy independently restores/masks only
 ## its own range on the source, so they compose without coordination.
 ##
-## [b]Per-tick lifecycle, four hooks:[/b]
+## [b]Per-tick lifecycle, five hooks:[/b]
 ## [br]1. [i]Restore[/i] (source.before_animation_state_apply) — reset every
 ##   source slot's color to its setup-pose color so last frame's α=0 mask
 ##   doesn't poison this frame's mirror. Restored unconditionally because
 ##   the claim can vary frame-to-frame with draw-order animations.
-## [br]2. [i]Mirror[/i] (source.before_world_transforms_change) — copy bones
-##   and slot state from source to proxy.
+## [br]2. [i]Mirror[/i] (source.before_world_transforms_change) — copy bone
+##   local poses and slot state from source to proxy.
 ## [br]3. [i]Source-mask[/i] (source.world_transforms_changed) — compute this
 ##   frame's claim from the source's current draw order, zero α on the claimed
 ##   slots. Runs unconditionally — hiding the proxy hides those slots
@@ -26,6 +26,11 @@ extends SpineSprite
 ##   rendering for the range, detach the proxy or clear [member source_sprite].
 ## [br]4. [i]Self-mask[/i] (own before_world_transforms_change) — zero α on
 ##   our own slots that are NOT in this frame's claim.
+## [br]5. [i]Mirror world[/i] (own world_transforms_changed) — after the
+##   proxy's own update_world_transform pass, override its bone world
+##   transforms with the source's final world transforms. Bypasses any
+##   constraint divergence (IK / transform / path / physics state that
+##   accumulates differently between the source's skeleton and ours).
 ##
 ## [b]Claim semantics:[/b] [member start_slot_name] and [member end_slot_name]
 ## are resolved against the source's [i]current draw order[/i] each frame, not
@@ -172,6 +177,7 @@ func _resolve_and_connect() -> void:
 	_source.before_world_transforms_change.connect(_mirror)
 	_source.world_transforms_changed.connect(_mask_source)
 	before_world_transforms_change.connect(_mask_self)
+	world_transforms_changed.connect(_mirror_world)
 
 	# Initial mirror so the first frame doesn't flash setup pose.
 	_mirror(null)
@@ -198,6 +204,8 @@ func _disconnect() -> void:
 				pose.set_color(data.get_color())
 	if before_world_transforms_change.is_connected(_mask_self):
 		before_world_transforms_change.disconnect(_mask_self)
+	if world_transforms_changed.is_connected(_mirror_world):
+		world_transforms_changed.disconnect(_mirror_world)
 	_source = null
 	_claimed_indices = {}
 
@@ -280,6 +288,33 @@ func _mask_source(_s) -> void:
 		var c = pose.get_color()
 		c.a = 0.0
 		pose.set_color(c)
+
+func _mirror_world(_s) -> void:
+	# Override the proxy's bone WORLD transforms with the source's, AFTER the
+	# proxy's own update_world_transform has run but BEFORE its update_meshes.
+	# This bypasses any constraint divergence (IK, transform, path, physics)
+	# between the source's skeleton and ours: the proxy renders the source's
+	# exact world pose, regardless of how the two skeletons' constraints
+	# would each compute it from the same local poses. Also collapses any
+	# incidental frame lag in the constraint chain.
+	if not is_instance_valid(_source):
+		return
+	var src_skel := _source.get_skeleton()
+	var dst_skel := get_skeleton()
+	if src_skel == null or dst_skel == null:
+		return
+	var src_bones := src_skel.get_bones()
+	var dst_bones := dst_skel.get_bones()
+	var n: int = min(src_bones.size(), dst_bones.size())
+	for i in n:
+		var s = src_bones[i].get_pose()
+		var d = dst_bones[i].get_pose()
+		d.set_a(s.get_a())
+		d.set_b(s.get_b())
+		d.set_c(s.get_c())
+		d.set_d(s.get_d())
+		d.set_world_x(s.get_world_x())
+		d.set_world_y(s.get_world_y())
 
 func _mask_self(_s) -> void:
 	# Zero our own slot colors for everything NOT in this frame's claim
