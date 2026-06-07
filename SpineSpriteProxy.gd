@@ -263,7 +263,16 @@ func _mirror(_s) -> void:
 		b.set_sequence_index(a.get_sequence_index())
 		b.set_deform(a.get_deform())
 
-	if follow_source_transform:
+
+func _process(_delta: float) -> void:
+	# Track the source's global_transform every frame, independent of either
+	# node's visibility. Spine's update_skeleton bails when the source is
+	# hidden, so the mirror hook on source.before_world_transforms_change
+	# doesn't fire — but the source's Node2D transform still updates from
+	# its parent chain (e.g. a tween on the monster), and we want to keep
+	# tracking so when the source becomes visible again the proxy is already
+	# in place. Matches the C++ render-separator's behavior.
+	if follow_source_transform and is_instance_valid(_source):
 		global_transform = _source.global_transform
 
 func _restore_source(_s) -> void:
