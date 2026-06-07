@@ -70,6 +70,16 @@ var end_slot_name: String = "":
 ## Set false to render the source's slots at the proxy's own scene-tree transform.
 @export var follow_source_transform: bool = true
 
+## When true (default), the proxy's [member visible] follows the source's
+## effective [method is_visible_in_tree]. Hiding the source — or any ancestor
+## of it — also hides the proxy, preventing a frozen-pose render of the
+## proxy while the source has stopped processing. Set false if you want to
+## drive the proxy's visibility independently.
+@export var hide_with_source: bool = true:
+	set(v):
+		hide_with_source = v
+		_sync_visibility()
+
 # --- internal state ---
 var _source: SpineSprite
 # Slot indices claimed this frame, recomputed from the source's current
@@ -176,8 +186,10 @@ func _resolve_and_connect() -> void:
 	_source.before_animation_state_apply.connect(_restore_source)
 	_source.before_world_transforms_change.connect(_mirror)
 	_source.world_transforms_changed.connect(_mask_source)
+	_source.visibility_changed.connect(_sync_visibility)
 	before_world_transforms_change.connect(_mask_self)
 	world_transforms_changed.connect(_mirror_world)
+	_sync_visibility()  # initial sync — source may already be invisible
 
 	# Initial mirror so the first frame doesn't flash setup pose.
 	_mirror(null)
@@ -190,6 +202,8 @@ func _disconnect() -> void:
 			_source.before_world_transforms_change.disconnect(_mirror)
 		if _source.world_transforms_changed.is_connected(_mask_source):
 			_source.world_transforms_changed.disconnect(_mask_source)
+		if _source.visibility_changed.is_connected(_sync_visibility):
+			_source.visibility_changed.disconnect(_sync_visibility)
 		# Restore source's slot colors to setup so the source draws its full
 		# skeleton again after we detach. We restore ALL slots because the
 		# claim can vary frame-to-frame with draw-order animations, so we
@@ -288,6 +302,20 @@ func _mask_source(_s) -> void:
 		var c = pose.get_color()
 		c.a = 0.0
 		pose.set_color(c)
+
+func _sync_visibility() -> void:
+	# Mirror source's effective visibility to ourselves. Fired from source's
+	# visibility_changed signal (which propagates through ancestor changes
+	# too — hiding any parent of source triggers it). Without this the proxy
+	# would remain visible rendering a frozen pose when the source has
+	# stopped processing.
+	if not hide_with_source:
+		return
+	if not is_instance_valid(_source):
+		return
+	var src_visible := _source.is_visible_in_tree()
+	if visible != src_visible:
+		visible = src_visible
 
 func _mirror_world(_s) -> void:
 	# Override the proxy's bone WORLD transforms with the source's, AFTER the
