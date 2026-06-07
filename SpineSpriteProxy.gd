@@ -203,13 +203,17 @@ func _resolve_and_connect() -> void:
 	# every spine-godot build; we degrade gracefully if it's missing.
 	_proxy_physics_constraints.clear()
 	var data_res := _source.skeleton_data_res
-	if data_res != null and data_res.has_method("get_physics_constraints"):
+	var has_enum: bool = data_res != null and data_res.has_method("get_physics_constraints")
+	if has_enum:
 		for data in data_res.get_physics_constraints():
 			if data != null and data.has_method("get_constraint_name"):
 				var cname: String = data.get_constraint_name()
 				var rt = get_skeleton().find_physics_constraint(cname)
 				if rt != null:
 					_proxy_physics_constraints.append(rt)
+	# Diagnostic: print once at setup so we can confirm enumeration worked.
+	print("[SpineSpriteProxy] enum bound: %s | cached %d physics constraint(s) for reset" \
+		% [has_enum, _proxy_physics_constraints.size()])
 
 	# Initial mirror so the first frame doesn't flash setup pose.
 	_mirror(null)
