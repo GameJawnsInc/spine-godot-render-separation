@@ -66,29 +66,41 @@ func run_assertions() -> void:
 	var prx_skel := proxy.get_skeleton()
 	var prx_slots := prx_skel.get_slots()
 
-	# 1) Bone mirror.
+	# 1) Bone mirror — applied_pose world transforms, since that's what the
+	# renderer actually reads (RegionAttachment.cpp:68 / VertexAttachment.cpp:62).
+	# For constrained bones (every IK chain — legs, arms) applied_pose points
+	# at _constrainedPose, which is a different object than get_pose().
 	var src_bones := src_skel.get_bones()
 	var prx_bones := prx_skel.get_bones()
 	var bone_diff_count := 0
-	var max_diff := 0.0
+	var max_world_diff := 0.0
+	var problems_shown: int = 0
 	for i in src_bones.size():
-		var a = src_bones[i].get_pose()
-		var b = prx_bones[i].get_pose()
-		var d: float = max(abs(a.get_x() - b.get_x()),
-			max(abs(a.get_y() - b.get_y()),
-			max(abs(a.get_rotation() - b.get_rotation()),
-			max(abs(a.get_scale_x() - b.get_scale_x()),
-				abs(a.get_scale_y() - b.get_scale_y())))))
-		max_diff = max(max_diff, d)
+		var a = src_bones[i].get_applied_pose()
+		var b = prx_bones[i].get_applied_pose()
+		var d: float = max(abs(a.get_a() - b.get_a()),
+			max(abs(a.get_b() - b.get_b()),
+			max(abs(a.get_c() - b.get_c()),
+			max(abs(a.get_d() - b.get_d()),
+			max(abs(a.get_world_x() - b.get_world_x()),
+				abs(a.get_world_y() - b.get_world_y()))))))
+		max_world_diff = max(max_world_diff, d)
 		if d > 0.001:
 			bone_diff_count += 1
+			if problems_shown < 5:
+				print("  bone %d (%s): src a/b/c/d/wx/wy = %.3f/%.3f/%.3f/%.3f/%.3f/%.3f" \
+					% [i, src_bones[i].get_data().get_bone_name(),
+					   a.get_a(), a.get_b(), a.get_c(), a.get_d(), a.get_world_x(), a.get_world_y()])
+				print("              prx a/b/c/d/wx/wy = %.3f/%.3f/%.3f/%.3f/%.3f/%.3f" \
+					% [b.get_a(), b.get_b(), b.get_c(), b.get_d(), b.get_world_x(), b.get_world_y()])
+				problems_shown += 1
 	if bone_diff_count == 0:
-		print("[PASS] BONE_MIRROR        — %d/%d bones match (max diff %.6f)" \
-			% [src_bones.size(), src_bones.size(), max_diff])
+		print("[PASS] BONE_MIRROR        — %d/%d applied_pose world transforms match (max diff %.6f)" \
+			% [src_bones.size(), src_bones.size(), max_world_diff])
 		passes += 1
 	else:
-		print("[FAIL] BONE_MIRROR        — %d/%d bones mismatched (max diff %.6f)" \
-			% [bone_diff_count, src_bones.size(), max_diff])
+		print("[FAIL] BONE_MIRROR        — %d/%d applied_pose world transforms mismatched (max diff %.6f)" \
+			% [bone_diff_count, src_bones.size(), max_world_diff])
 		fails += 1
 
 	# 2) Attachment mirror. Compare by name because get_attachment() may
