@@ -204,16 +204,25 @@ func _resolve_and_connect() -> void:
 	_proxy_physics_constraints.clear()
 	var data_res := _source.skeleton_data_res
 	var has_enum: bool = data_res != null and data_res.has_method("get_physics_constraints")
+	var data_count: int = 0
+	var unresolved: Array = []
 	if has_enum:
-		for data in data_res.get_physics_constraints():
-			if data != null and data.has_method("get_constraint_name"):
-				var cname: String = data.get_constraint_name()
-				var rt = get_skeleton().find_physics_constraint(cname)
-				if rt != null:
-					_proxy_physics_constraints.append(rt)
-	# Diagnostic: print once at setup so we can confirm enumeration worked.
-	print("[SpineSpriteProxy] enum bound: %s | cached %d physics constraint(s) for reset" \
-		% [has_enum, _proxy_physics_constraints.size()])
+		var data_arr = data_res.get_physics_constraints()
+		data_count = data_arr.size()
+		for idx in data_arr.size():
+			var data = data_arr[idx]
+			var cname: String = data.get_constraint_name() if data != null and data.has_method("get_constraint_name") else ""
+			var rt = get_skeleton().find_physics_constraint(cname) if cname != "" else null
+			if rt != null:
+				_proxy_physics_constraints.append(rt)
+			else:
+				unresolved.append("idx=%d name='%s'" % [idx, cname])
+	print("[SpineSpriteProxy] enum bound: %s | data has %d constraint(s) | resolved %d for reset" \
+		% [has_enum, data_count, _proxy_physics_constraints.size()])
+	if not unresolved.is_empty():
+		print("[SpineSpriteProxy] unresolved physics constraints:")
+		for u in unresolved:
+			print("  ", u)
 
 	# Initial mirror so the first frame doesn't flash setup pose.
 	_mirror(null)
