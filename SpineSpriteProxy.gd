@@ -263,6 +263,15 @@ func _mirror(_s) -> void:
 		b.set_sequence_index(a.get_sequence_index())
 		b.set_deform(a.get_deform())
 
+	# Also sync transform here, not just in _process. Engine internal-process
+	# vs _process order is implementation-dependent, and runtime tick order
+	# differs from editor preview; setting it here as well guarantees the
+	# proxy's update_skeleton this frame computes against source's current
+	# global_transform. _process still handles the "source invisible, no
+	# signal" case.
+	if follow_source_transform:
+		global_transform = _source.global_transform
+
 
 func _process(_delta: float) -> void:
 	# Track the source's global_transform every frame, independent of either
@@ -352,6 +361,20 @@ func _mirror_world(_s) -> void:
 	for i in n:
 		var s = src_bones[i].get_applied_pose()
 		var d = dst_bones[i].get_applied_pose()
+		# Local fields. Matter for physics continuity — Spine 4.3 physics
+		# constraints use applied_pose.local as integration state across
+		# frames, and a divergence here can compound visually even after
+		# world transforms are corrected.
+		d.set_x(s.get_x())
+		d.set_y(s.get_y())
+		d.set_rotation(s.get_rotation())
+		d.set_scale_x(s.get_scale_x())
+		d.set_scale_y(s.get_scale_y())
+		d.set_shear_x(s.get_shear_x())
+		d.set_shear_y(s.get_shear_y())
+		d.set_inherit(s.get_inherit())
+		# World fields. These are what the renderer reads (RegionAttachment.cpp
+		# / VertexAttachment.cpp read getAppliedPose().getA() etc).
 		d.set_a(s.get_a())
 		d.set_b(s.get_b())
 		d.set_c(s.get_c())
