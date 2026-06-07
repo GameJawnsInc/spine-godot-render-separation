@@ -86,6 +86,13 @@ var _source: SpineSprite
 # draw order in _mask_source and consumed in _mask_self. Empty when the
 # proxy is hidden (so the source draws everything).
 var _claimed_indices: Dictionary = {}
+# Proxy's physics constraints, cached at _resolve_and_connect for per-frame
+# reset. Spine 4.3 physics integrates with internal state (velocities,
+# offsets) that diverges from the source's; resetting each frame keeps the
+# proxy's physics in its "skip integration" branch so our world-transform
+# override isn't fighting an independent simulation. Empty when no physics
+# constraints exist (or get_physics_constraints isn't bound in the build).
+var _proxy_physics_constraints: Array = []
 
 # --- lifecycle ---
 
@@ -191,6 +198,19 @@ func _resolve_and_connect() -> void:
 	world_transforms_changed.connect(_mirror_world)
 	_sync_visibility()  # initial sync — source may already be invisible
 
+	# Cache proxy's physics constraints for per-frame reset (see _mirror_world).
+	# Use a feature check because get_physics_constraints isn't bound in
+	# every spine-godot build; we degrade gracefully if it's missing.
+	_proxy_physics_constraints.clear()
+	var data_res := _source.skeleton_data_res
+	if data_res != null and data_res.has_method("get_physics_constraints"):
+		for data in data_res.get_physics_constraints():
+			if data != null and data.has_method("get_constraint_name"):
+				var cname: String = data.get_constraint_name()
+				var rt = get_skeleton().find_physics_constraint(cname)
+				if rt != null:
+					_proxy_physics_constraints.append(rt)
+
 	# Initial mirror so the first frame doesn't flash setup pose.
 	_mirror(null)
 
@@ -222,6 +242,7 @@ func _disconnect() -> void:
 		world_transforms_changed.disconnect(_mirror_world)
 	_source = null
 	_claimed_indices = {}
+	_proxy_physics_constraints.clear()
 
 # --- mirror & mask hooks ---
 
@@ -381,6 +402,15 @@ func _mirror_world(_s) -> void:
 		d.set_d(s.get_d())
 		d.set_world_x(s.get_world_x())
 		d.set_world_y(s.get_world_y())
+
+	# Reset our physics constraints so next frame's physics pass skips
+	# integration (the if-_reset branch in PhysicsConstraint::update sets
+	# the baselines to the current bone position and returns without
+	# modifying anything). Our world-transform override is then the
+	# only authority — proxy never accumulates an independent physics sim.
+	for c in _proxy_physics_constraints:
+		if c != null:
+			c.reset(dst_skel)
 
 func _mask_self(_s) -> void:
 	# Zero our own slot colors for everything NOT in this frame's claim
