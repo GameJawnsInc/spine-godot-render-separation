@@ -70,6 +70,14 @@ var end_slot_name: String = "":
 ## Set false to render the source's slots at the proxy's own scene-tree transform.
 @export var follow_source_transform: bool = true
 
+## Optional manual list of physics constraint names to reset each frame, used
+## as a workaround for a binding bug in spine-godot where get_physics_constraints
+## can drop entries when non-physics constraints come first in the skeleton's
+## constraint list. List the names you see in the Spine editor's Constraints
+## panel; the proxy will look each one up by find_physics_constraint and reset
+## it each frame, in addition to whatever auto-enumeration finds.
+@export var physics_constraint_names_override: PackedStringArray
+
 ## When true (default), the proxy's [member visible] follows the source's
 ## effective [method is_visible_in_tree]. Hiding the source — or any ancestor
 ## of it — also hides the proxy, preventing a frozen-pose render of the
@@ -217,10 +225,22 @@ func _resolve_and_connect() -> void:
 				_proxy_physics_constraints.append(rt)
 			else:
 				unresolved.append("idx=%d name='%s'" % [idx, cname])
-	print("[SpineSpriteProxy] enum bound: %s | data has %d constraint(s) | resolved %d for reset" \
-		% [has_enum, data_count, _proxy_physics_constraints.size()])
+	# Manual override: resolve names from the inspector list too. Lets the
+	# user work around the binding bug by listing constraint names from the
+	# Spine editor directly. Skips duplicates already added via auto-enum.
+	var auto_resolved_count: int = _proxy_physics_constraints.size()
+	for cname in physics_constraint_names_override:
+		if cname == "":
+			continue
+		var rt = get_skeleton().find_physics_constraint(cname)
+		if rt != null and not _proxy_physics_constraints.has(rt):
+			_proxy_physics_constraints.append(rt)
+	print("[SpineSpriteProxy] enum bound: %s | data has %d constraint(s) | auto-resolved %d, +%d from override | total %d for reset" \
+		% [has_enum, data_count, auto_resolved_count,
+		   _proxy_physics_constraints.size() - auto_resolved_count,
+		   _proxy_physics_constraints.size()])
 	if not unresolved.is_empty():
-		print("[SpineSpriteProxy] unresolved physics constraints:")
+		print("[SpineSpriteProxy] auto-enum unresolved (binding bug):")
 		for u in unresolved:
 			print("  ", u)
 
