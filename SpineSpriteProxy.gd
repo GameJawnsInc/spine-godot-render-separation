@@ -332,8 +332,14 @@ func _mirror_world(_s) -> void:
 	# This bypasses any constraint divergence (IK, transform, path, physics)
 	# between the source's skeleton and ours: the proxy renders the source's
 	# exact world pose, regardless of how the two skeletons' constraints
-	# would each compute it from the same local poses. Also collapses any
-	# incidental frame lag in the constraint chain.
+	# would each compute it from the same local poses.
+	#
+	# Critical: read/write get_applied_pose(), not get_pose(). Constrained
+	# bones (anything driven by IK/Transform/Path/Physics) have a separate
+	# _constrainedPose that get_applied_pose() points at — and that's the
+	# one the renderer reads. Writing to get_pose() would set the wrong
+	# BonePose for any constrained bone, which is the root of every IK
+	# chain in a typical rig (legs, arms). See spine-cpp Posed.h:93.
 	if not is_instance_valid(_source):
 		return
 	var src_skel := _source.get_skeleton()
@@ -344,8 +350,8 @@ func _mirror_world(_s) -> void:
 	var dst_bones := dst_skel.get_bones()
 	var n: int = min(src_bones.size(), dst_bones.size())
 	for i in n:
-		var s = src_bones[i].get_pose()
-		var d = dst_bones[i].get_pose()
+		var s = src_bones[i].get_applied_pose()
+		var d = dst_bones[i].get_applied_pose()
 		d.set_a(s.get_a())
 		d.set_b(s.get_b())
 		d.set_c(s.get_c())
